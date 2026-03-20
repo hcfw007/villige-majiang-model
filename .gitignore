@@ -1,0 +1,8 @@
+checkpoints/*.zip
+!checkpoints/best_model.zip
+logs/
+nohup.out
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
