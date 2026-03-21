@@ -13,13 +13,22 @@ from collections import defaultdict
 from stable_baselines3.common.callbacks import BaseCallback
 
 WIN_TYPE_ZH = {
-    "standard":    "普通（靠杠）",
-    "qingyise":    "清一色",
-    "yitiaolong":  "一条龙",
-    "qidui":       "七对",
-    "shisanyao":   "十三幺",
-    "four_wilds":  "集齐万能牌",
+    "standard":                  "普通（靠杠）",
+    "qingyise":                  "清一色",
+    "yitiaolong":                "一条龙",
+    "qingyise+yitiaolong":       "清一色+一条龙",
+    "qidui":                     "七对",
+    "santiaoyun":                "三调一",
+    "ziyise":                    "字一色",
+    "qidui+ziyise":              "字一色七对",
+    "santiaoyun+ziyise":         "字一色三调一",
+    "shisanyao":                 "十三幺",
+    "four_wilds":                "开会",
 }
+
+def _type_key(win_types: list) -> str:
+    """将 win_types 列表转为统计 key，多牌型组合单独列出"""
+    return "+".join(sorted(win_types))
 
 
 class StatsCallback(BaseCallback):
@@ -47,6 +56,7 @@ class StatsCallback(BaseCallback):
         self._cum_pong_skipped = 0
         self._cum_kong_taken   = 0
         self._cum_win_declared = 0
+        self._cum_win_skipped  = 0
 
     def _reset_counters(self):
         self.episodes      = 0
@@ -62,6 +72,7 @@ class StatsCallback(BaseCallback):
         self.pong_skipped  = 0
         self.kong_taken    = 0
         self.win_declared  = 0
+        self.win_skipped   = 0
 
     def _on_step(self) -> bool:
         for info in self.locals.get("infos", []):
@@ -85,9 +96,9 @@ class StatsCallback(BaseCallback):
                 self.agent_wins          += 1
                 self._cum_agent_wins     += 1
                 if win_result and hasattr(win_result, "win_types"):
-                    for t in win_result.win_types:
-                        self.agent_types[t]      += 1
-                        self._cum_agent_types[t] += 1
+                    key = _type_key(win_result.win_types)
+                    self.agent_types[key]      += 1
+                    self._cum_agent_types[key] += 1
                     score = float(win_result.base_score)
                     self.win_scores.append(score)
                     self._cum_win_scores.append(score)
@@ -95,9 +106,9 @@ class StatsCallback(BaseCallback):
                 self.opp_wins        += 1
                 self._cum_opp_wins   += 1
                 if win_result and hasattr(win_result, "win_types"):
-                    for t in win_result.win_types:
-                        self.opp_types[t]      += 1
-                        self._cum_opp_types[t] += 1
+                    key = _type_key(win_result.win_types)
+                    self.opp_types[key]      += 1
+                    self._cum_opp_types[key] += 1
 
             # 策略行为统计
             pt = int(info.get("pong_taken",   0))
@@ -107,7 +118,9 @@ class StatsCallback(BaseCallback):
             self.pong_taken   += pt;  self._cum_pong_taken   += pt
             self.pong_skipped += ps;  self._cum_pong_skipped += ps
             self.kong_taken   += kt;  self._cum_kong_taken   += kt
+            ws = int(info.get("win_skipped", 0))
             self.win_declared += wd;  self._cum_win_declared += wd
+            self.win_skipped  += ws;  self._cum_win_skipped  += ws
 
         # 每 log_episodes 局输出一次
         if self.episodes > 0 and self.episodes - self._last_log_ep >= self.log_episodes:
@@ -162,6 +175,8 @@ class StatsCallback(BaseCallback):
               f"（平均 {self.kong_taken/n:.2f} 次/局）")
         print(f"    宣胡次数: {self.win_declared} 次  "
               f"（成功率 {self.agent_wins/max(1,self.win_declared)*100:.0f}%）")
+        print(f"    能胡不胡: {self.win_skipped} 次  "
+              f"（每局 {self.win_skipped/n:.2f} 次）")
 
         # ── 累计汇总 ──
         N = self._total_episodes
@@ -204,6 +219,7 @@ class StatsCallback(BaseCallback):
                               if self.win_scores else 0,
             "pong_rate":      round(pong_rate / 100, 4),
             "kong_per_game":  round(self.kong_taken / n, 4),
+            "win_skipped_per_game": round(self.win_skipped / n, 4),
             # 累计字段
             "cum_avg_reward":     round(self._cum_total_reward / self._total_episodes, 3) if self._total_episodes else 0,
             "cum_liuju_rate":     round(self._cum_liuju / self._total_episodes, 4) if self._total_episodes else 0,

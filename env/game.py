@@ -166,6 +166,7 @@ def check_win(state: GameState, seat: int) -> Optional[WinResult]:
         open_melds=open_melds,
         kong_score=kong_score,
         total_wild_count=p.max_wilds_held,
+        last_drawn=state.last_drawn,
     )
     return result
 

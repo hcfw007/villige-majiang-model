@@ -202,6 +202,43 @@ def check_standard(counts: list[int], wilds: int, open_melds: list) -> bool:
 
 
 # ─────────────────────────────────────────────
+# 辅助：字一色
+# ─────────────────────────────────────────────
+
+def check_ziyise(counts: list[int], wilds: int, open_melds: list) -> bool:
+    """字一色：所有牌（含碰/杠）均为字牌，万能牌可补"""
+    for meld_type, tiles in open_melds:
+        if meld_type in ('pong_wild', 'kong_wild'):
+            continue
+        for t in tiles:
+            if tile_suit(t) != SUIT_ZI:
+                return False
+    for i in range(NUM_TILE_TYPES):
+        if counts[i] > 0 and tile_suit(i) != SUIT_ZI:
+            return False
+    return True
+
+
+# ─────────────────────────────────────────────
+# 辅助：三调一
+# ─────────────────────────────────────────────
+
+def check_santiaoyun(
+    counts: list[int], wilds: int, open_melds: list, last_drawn: Optional[int]
+) -> bool:
+    """
+    三调一：七对手牌中摸到某牌凑成4张（纯正牌，不含万能牌顶替），
+    且胡牌张恰好是这张。
+    """
+    if last_drawn is None:
+        return False
+    if not check_qidui(counts, wilds, open_melds):
+        return False
+    # last_drawn 在手牌中出现 ≥ 4 次（counts 只计真实牌，已排除万能牌）
+    return counts[last_drawn] >= 4
+
+
+# ─────────────────────────────────────────────
 # 辅助：清一色
 # ─────────────────────────────────────────────
 
@@ -283,6 +320,7 @@ def evaluate_hand(
     open_melds: list,
     kong_score: int,
     total_wild_count: int,  # 含公开碰/杠中的万能牌
+    last_drawn: Optional[int] = None,  # 本次摸到的牌（用于三调一检测）
 ) -> Optional[WinResult]:
     """
     检测当前手牌是否能胡牌，返回 WinResult 或 None。
@@ -314,6 +352,8 @@ def evaluate_hand(
     if not win_types:
         is_qingyise   = check_qingyise(counts, wilds, open_melds)
         is_yitiaolong = check_yitiaolong(counts, wilds, open_melds)
+        is_ziyise     = check_ziyise(counts, wilds, open_melds)
+        is_santiaoyun = check_santiaoyun(counts, wilds, open_melds, last_drawn)
         is_qidui      = check_qidui(counts, wilds, open_melds)
         is_std        = check_standard(counts, wilds, open_melds)
 
@@ -323,7 +363,15 @@ def evaluate_hand(
         if is_yitiaolong:
             win_types.append('yitiaolong')
             hand_score += 10
-        if is_qidui:
+        # 字一色：需同时满足某种合法手型结构
+        if is_ziyise and (is_std or is_qidui or is_santiaoyun):
+            win_types.append('ziyise')
+            hand_score += 20
+        # 三调一优先于普通七对（三调一本身已是七对的子集）
+        if is_santiaoyun:
+            win_types.append('santiaoyun')
+            hand_score += 20
+        elif is_qidui:
             win_types.append('qidui')
             hand_score += 10
         if is_std and not win_types:
