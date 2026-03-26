@@ -28,10 +28,9 @@ SHANTEN_REWARD_SCALE = 0.4   # 每减少1向听的奖励
 TENPAI_BONUS         = 3.0   # 有效听牌（底分≥门槛）额外奖励
 # 无效路径（当前底分潜力不足）时的奖励缩小倍数
 INVALID_PATH_SCALE   = 0.1
-WIN_BONUS            = 3.0   # 终局胜利额外奖励（鼓励主动胡牌）
-LIUJU_TENPAI_BONUS   = 1.0   # 流局时已听牌
-LIUJU_SHANTEN1_BONUS = 0.5   # 流局时1向听
-LIUJU_SHANTEN2_BONUS = 0.25  # 流局时2向听
+WIN_BONUS_BASE       = 10.0  # 终局胜利基础奖励
+LIUJU_PENALTY        = -3.0  # 流局惩罚（降低保守流局倾向）
+KONG_REWARD          = 2.0   # 每次杠牌即时奖励（鼓励积极杠牌）
 
 
 class SingleAgentMajiangEnv(gym.Env):
@@ -93,11 +92,12 @@ class SingleAgentMajiangEnv(gym.Env):
         obs, rewards, done, info = env.step(action)
 
         if done:
-            terminal_r = float(rewards[0])
             if env.state.winner == 0:
-                terminal_r += WIN_BONUS
-            elif env.state.winner is None:
-                terminal_r += self._liuju_bonus()
+                terminal_r = WIN_BONUS_BASE + env.state.win_result.base_score
+            else:
+                terminal_r = float(rewards[0])
+                if env.state.winner is None:
+                    terminal_r += self._liuju_bonus()
             return obs, terminal_r, True, False, self._episode_info()
 
         # 让对手行动，直到轮到 seat=0 或游戏结束
@@ -105,17 +105,22 @@ class SingleAgentMajiangEnv(gym.Env):
         done = env.state.phase == 'end'
         if done:
             deltas = settle(env.state)
-            terminal_r = float(deltas[0])
             if env.state.winner == 0:
-                terminal_r += WIN_BONUS
-            elif env.state.winner is None:
-                terminal_r += self._liuju_bonus()
+                terminal_r = WIN_BONUS_BASE + env.state.win_result.base_score
+            else:
+                terminal_r = float(deltas[0])
+                if env.state.winner is None:
+                    terminal_r += self._liuju_bonus()
             return obs, terminal_r, True, False, self._episode_info()
 
         # 计算中间奖励（基于向听数变化）
         new_shanten = self._get_shanten()
         step_reward = self._shanten_reward(self._prev_shanten, new_shanten)
         self._prev_shanten = new_shanten
+
+        # 杠牌即时奖励
+        if action in (ACT_KONG_SELF, ACT_KONG_DISCARD):
+            step_reward += KONG_REWARD
 
         self._last_obs = obs
         return obs, step_reward, False, False, {}
@@ -131,15 +136,8 @@ class SingleAgentMajiangEnv(gym.Env):
         return calc_shanten(counts, wilds, n_melds_fixed)
 
     def _liuju_bonus(self) -> float:
-        """流局时根据向听数给予安慰奖励"""
-        sh = self._get_shanten()
-        if sh == 0:
-            return LIUJU_TENPAI_BONUS
-        elif sh == 1:
-            return LIUJU_SHANTEN1_BONUS
-        elif sh == 2:
-            return LIUJU_SHANTEN2_BONUS
-        return 0.0
+        """流局惩罚（固定负值，消除保守流局倾向）"""
+        return LIUJU_PENALTY
 
     def _estimate_score_potential(self) -> int:
         """

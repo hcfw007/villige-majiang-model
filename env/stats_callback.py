@@ -148,22 +148,29 @@ class StatsCallback(BaseCallback):
         print(f"    对手胡牌:     {self.opp_wins:5d} 局  {self.opp_wins/n*100:5.1f}%")
 
         # ── 智能体牌型 ──
+        print(f"\n  智能体胡牌牌型:")
         if self.agent_types:
-            print(f"\n  智能体胡牌牌型:")
+            import numpy as np
+            print(f"  | 牌型 | 局数 | 占比 |")
+            print(f"  |------|------|------|")
             for t, c in sorted(self.agent_types.items(), key=lambda x: -x[1]):
                 zh = WIN_TYPE_ZH.get(t, t)
-                print(f"    {zh:12s}: {c:4d} 局  {c/n*100:4.1f}%")
+                print(f"  | {zh} | {c} | {c/n*100:.1f}% |")
             if self.win_scores:
-                import numpy as np
-                print(f"    平均底分: {np.mean(self.win_scores):.1f}  "
-                      f"最高: {max(self.win_scores):.0f}")
+                print(f"  平均底分: {np.mean(self.win_scores):.1f}  最高: {max(self.win_scores):.0f}")
+        else:
+            print(f"  （本段无胡牌）")
 
         # ── 对手牌型 ──
+        print(f"\n  对手胡牌牌型:")
         if self.opp_types:
-            print(f"\n  对手胡牌牌型:")
+            print(f"  | 牌型 | 局数 | 占比 |")
+            print(f"  |------|------|------|")
             for t, c in sorted(self.opp_types.items(), key=lambda x: -x[1]):
                 zh = WIN_TYPE_ZH.get(t, t)
-                print(f"    {zh:12s}: {c:4d} 局  {c/n*100:4.1f}%")
+                print(f"  | {zh} | {c} | {c/n*100:.1f}% |")
+        else:
+            print(f"  （本段无对手胡牌）")
 
         # ── 策略行为 ──
         total_pong_opp = self.pong_taken + self.pong_skipped
@@ -189,15 +196,19 @@ class StatsCallback(BaseCallback):
             print(f"    流局率:       {self._cum_liuju/N*100:5.1f}%")
             print(f"    智能体胡牌率: {self._cum_agent_wins/N*100:5.2f}%")
             print(f"    对手胡牌率:   {self._cum_opp_wins/N*100:5.2f}%")
+            print(f"    智能体牌型:")
             if self._cum_agent_types:
-                print(f"    智能体牌型:")
+                import numpy as np
+                print(f"    | 牌型 | 局数 | 占比 |")
+                print(f"    |------|------|------|")
                 for t, c in sorted(self._cum_agent_types.items(), key=lambda x: -x[1]):
                     zh = WIN_TYPE_ZH.get(t, t)
-                    print(f"      {zh:12s}: {c:4d} 局  {c/N*100:4.2f}%")
+                    print(f"    | {zh} | {c} | {c/N*100:.2f}% |")
                 if self._cum_win_scores:
-                    import numpy as np
                     print(f"    累计平均底分: {np.mean(self._cum_win_scores):.1f}  "
                           f"最高: {max(self._cum_win_scores):.0f}")
+            else:
+                print(f"    （暂无胡牌）")
             print(f"    碰牌率:       {cum_pong_rate:5.1f}%")
             print(f"    平均杠/局:    {self._cum_kong_taken/N:.3f}")
         print(bar)
