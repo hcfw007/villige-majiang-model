@@ -42,6 +42,9 @@ class StatsCallback(BaseCallback):
 
         self._total_episodes = 0   # 历史累计局数（不重置）
         self._last_log_ep    = 0
+        self._pending_replay  = None  # 当前批次待保存的牌谱
+        self._replay_dir      = os.path.join(log_dir, "replays")
+        os.makedirs(self._replay_dir, exist_ok=True)
         self._reset_counters()
 
         # ── 累计计数器（永不重置）──
@@ -73,6 +76,8 @@ class StatsCallback(BaseCallback):
         self.kong_taken    = 0
         self.win_declared  = 0
         self.win_skipped   = 0
+        self._pending_replay = None  # 每批第一局的牌谱
+        self._pending_win_replay = None  # 每批第一局胡牌的牌谱
 
     def _on_step(self) -> bool:
         for info in self.locals.get("infos", []):
@@ -85,6 +90,11 @@ class StatsCallback(BaseCallback):
             r = float(ep["r"])
             self.total_reward        += r
             self._cum_total_reward   += r
+
+            replay = info.get("replay")
+            # 每批取第一局牌谱
+            if self._pending_replay is None and replay:
+                self._pending_replay = replay
 
             winner     = info.get("winner")
             win_result = info.get("win_result")
@@ -102,6 +112,12 @@ class StatsCallback(BaseCallback):
                     score = float(win_result.base_score)
                     self.win_scores.append(score)
                     self._cum_win_scores.append(score)
+                    # 非标准牌型（非 standard）立即保存牌谱
+                    if key != "standard" and replay:
+                        self._save_replay(replay, self._total_episodes, tag=f"_{key}")
+                # 每批保存第一局智能体胡牌的牌谱
+                if self._pending_win_replay is None and replay:
+                    self._pending_win_replay = replay
             else:
                 self.opp_wins        += 1
                 self._cum_opp_wins   += 1
@@ -244,4 +260,40 @@ class StatsCallback(BaseCallback):
         with open(self.stats_file, "a") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+        # 保存本批次牌谱（流局/普通）
+        if self._pending_replay:
+            self._save_replay(self._pending_replay, self._total_episodes, tag="")
+        # 保存本批次第一局胡牌牌谱（若有）
+        if self._pending_win_replay:
+            self._save_replay(self._pending_win_replay, self._total_episodes, tag="_win")
+
         self._reset_counters()
+
+    def _save_replay(self, replay: list, ep_idx: int, tag: str = ""):
+        """将事件列表格式化为可读牌谱文本并保存"""
+        lines = []
+        for ev in replay:
+            e = ev.get("e")
+            if e == "init":
+                lines.append(f"【初始】万能牌={ev['wild']}  庄家=seat{ev['dealer']}")
+            elif e == "draw":
+                sht_str = f"向听{ev['sht']}" if ev['sht'] >= 0 else "听牌"
+                lines.append(f"  摸 {ev['tile']:>3}  {sht_str:5}  手: {ev['hand']}")
+            elif e == "act":
+                lines.append(f"  → {ev['a']}")
+            elif e == "opp":
+                lines.append(f"  [seat{ev['seat']}] {ev['a']}")
+            elif e == "end":
+                res = ev['result']
+                deltas = ev.get('deltas') or {}
+                delta_str = "  ".join(
+                    f"seat{i}{'%+d' % deltas[i]}" for i in sorted(deltas)
+                ) if deltas else ""
+                if ev.get('types'):
+                    lines.append(f"【终局】{res}  牌型={ev['types']}  底分={ev['score']}  [{delta_str}]")
+                else:
+                    lines.append(f"【终局】{res}" + (f"  [{delta_str}]" if delta_str else ""))
+        text = "\n".join(lines)
+        fname = os.path.join(self._replay_dir, f"replay_{ep_idx:07d}{tag}.txt")
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(text + "\n")

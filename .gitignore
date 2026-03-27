@@ -1,6 +1,7 @@
 checkpoints/*.zip
 !checkpoints/best_model.zip
 logs/
+logs/replays/
 nohup.out
 __pycache__/
 *.pyc

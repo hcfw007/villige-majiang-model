@@ -369,7 +369,7 @@ def _do_win(state: GameState, seat: int, result: WinResult, lingshang: bool, tri
 def settle(state: GameState) -> dict:
     """
     结算本局，返回 {seat: score_delta}。
-    流局：每人 -10 分。
+    流局：庄家付给每位闲家 10 分（庄家 -20，闲家各 +10）。
     胡牌：赢家收分，输家付分。
     """
     if state.winner is None:

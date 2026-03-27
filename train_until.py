@@ -34,7 +34,11 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 def get_pool_opponent(pool: list):
     """从历史 checkpoint 池随机选一个对手；池为空则用当前最佳模型"""
+    import time
     path = random.choice(pool) if pool else BEST_MODEL_PATH
+    mtime = os.path.getmtime(path + ".zip") if os.path.exists(path + ".zip") else os.path.getmtime(path)
+    mtime_str = time.strftime("%m-%d %H:%M", time.localtime(mtime))
+    print(f"  对手模型: {os.path.basename(path)}  (保存于 {mtime_str})")
     opp_model = MaskablePPO.load(path)
     return make_model_policy(opp_model)
 
@@ -128,6 +132,7 @@ def main(args):
     target      = args.target
     steps_round = args.steps_per_round
     n_envs      = args.n_envs
+    max_rounds  = args.rounds  # 0 表示无限制
 
     model = MaskablePPO.load(BEST_MODEL_PATH)
 
@@ -137,7 +142,7 @@ def main(args):
 
     checkpoint_pool = []  # 历史 checkpoint 路径池（最近 POOL_SIZE 个）
     iteration = 0
-    while score < target:
+    while score < target and (max_rounds == 0 or iteration < max_rounds):
         iteration += 1
         print(f"\n{'='*50}")
         print(f"第 {iteration} 轮训练  当前: {score:.2f}  目标: {target}")
@@ -195,5 +200,6 @@ if __name__ == "__main__":
     parser.add_argument("--target",          type=float, default=8.0,     help="目标平均分")
     parser.add_argument("--steps_per_round", type=int,   default=800_000, help="每轮训练步数")
     parser.add_argument("--n_envs",          type=int,   default=8,       help="并行环境数")
+    parser.add_argument("--rounds",          type=int,   default=0,       help="最多训练轮数（0=无限制）")
     args = parser.parse_args()
     main(args)

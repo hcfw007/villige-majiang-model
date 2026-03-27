@@ -19,18 +19,21 @@ from env.game import new_game, action_draw, settle, check_win
 from env.tile import NUM_TILE_TYPES
 from env.shanten import calc_shanten, _shanten_qidui
 from env.scorer import calc_kong_score
-from env.tile import tile_suit, SUIT_ZI
+from env.tile import tile_suit, SUIT_ZI, tile_name
 
 OBS_DIM = 382
 
 # ── 中间奖励系数 ──────────────────────────────────────
-SHANTEN_REWARD_SCALE = 0.4   # 每减少1向听的奖励
-TENPAI_BONUS         = 3.0   # 有效听牌（底分≥门槛）额外奖励
+SHANTEN_REWARD_SCALE  = 0.4   # 每减少1向听的奖励
+TENPAI_BONUS          = 3.0   # 有效听牌（底分≥门槛）额外奖励
 # 无效路径（当前底分潜力不足）时的奖励缩小倍数
-INVALID_PATH_SCALE   = 0.1
-WIN_BONUS_BASE       = 10.0  # 终局胜利基础奖励
-LIUJU_PENALTY        = -3.0  # 流局惩罚（降低保守流局倾向）
-KONG_REWARD          = 2.0   # 每次杠牌即时奖励（鼓励积极杠牌）
+INVALID_PATH_SCALE    = 0.1
+# 有杠潜力但尚未杠到时的奖励缩小倍数
+KONG_POTENTIAL_SCALE  = 0.5
+KONG_REWARD           = 2.0   # 每次杠牌即时奖励（鼓励积极杠牌）
+JIAKANG_TENPAI_BONUS  = 4.0   # 听牌状态下加杠（碰升杠）的额外奖励，激励杠上开花
+LIUJU_PENALTY         = 3.0   # 流局额外惩罚（叠加在结算分之上）
+
 
 
 class SingleAgentMajiangEnv(gym.Env):
@@ -56,6 +59,7 @@ class SingleAgentMajiangEnv(gym.Env):
         self._env = MajiangEnv(dealer=dealer)
         self._last_obs = None
         self._prev_shanten = 8  # 上一步的向听数，用于计算中间奖励
+        self._replay_log: list = []
 
     # ─────────────────────────────────────────────
     # Gym 接口
@@ -69,6 +73,10 @@ class SingleAgentMajiangEnv(gym.Env):
         dealer = random.randint(0, 2) if self.dealer == -1 else self.dealer
         self._env = MajiangEnv(dealer=dealer)
         obs, info = self._env.reset()
+        # 牌谱
+        self._replay_log = [{"e": "init",
+                              "wild": tile_name(self._env.state.wild_idx),
+                              "dealer": dealer}]
         # 对局内策略行为计数器
         self._act_pong_taken   = 0
         self._act_pong_skipped = 0
@@ -85,42 +93,49 @@ class SingleAgentMajiangEnv(gym.Env):
         env = self._env
         state = env.state
 
+        # 记录牌谱：记录本次轮到seat0时的摸牌及动作
+        self._log_agent_turn(action, state)
+
         # 记录策略行为
         self._record_action(action, env.legal_actions(0))
+
+        # 行动前保存需要的信息（state 对象会被 env.step 原地修改）
+        shanten_before = self._prev_shanten
+        is_jiakang = (action == ACT_KONG_SELF) and self._is_jiakang(state)
 
         # 执行 seat=0 的动作
         obs, rewards, done, info = env.step(action)
 
         if done:
-            if env.state.winner == 0:
-                terminal_r = WIN_BONUS_BASE + env.state.win_result.base_score
-            else:
-                terminal_r = float(rewards[0])
-                if env.state.winner is None:
-                    terminal_r += self._liuju_bonus()
-            return obs, terminal_r, True, False, self._episode_info()
+            deltas = settle(env.state)
+            terminal_r = float(deltas[0])
+            if env.state.winner is None:
+                terminal_r -= LIUJU_PENALTY
+            return obs, terminal_r, True, False, self._episode_info(deltas)
+
+        # 立即计算行动后向听数（行动前 vs 行动后，直接衡量本次动作的影响）
+        post_action_shanten = self._get_shanten()
+        step_reward = self._shanten_reward(shanten_before, post_action_shanten)
 
         # 让对手行动，直到轮到 seat=0 或游戏结束
         obs = self._run_opponents_until_agent(obs, info)
         done = env.state.phase == 'end'
         if done:
             deltas = settle(env.state)
-            if env.state.winner == 0:
-                terminal_r = WIN_BONUS_BASE + env.state.win_result.base_score
-            else:
-                terminal_r = float(deltas[0])
-                if env.state.winner is None:
-                    terminal_r += self._liuju_bonus()
-            return obs, terminal_r, True, False, self._episode_info()
+            terminal_r = float(deltas[0])
+            if env.state.winner is None:
+                terminal_r -= LIUJU_PENALTY
+            return obs, terminal_r, True, False, self._episode_info(deltas)
 
-        # 计算中间奖励（基于向听数变化）
-        new_shanten = self._get_shanten()
-        step_reward = self._shanten_reward(self._prev_shanten, new_shanten)
-        self._prev_shanten = new_shanten
+        # 更新 prev_shanten 为下一步"行动前"的状态（已摸牌）
+        self._prev_shanten = self._get_shanten()
 
         # 杠牌即时奖励
         if action in (ACT_KONG_SELF, ACT_KONG_DISCARD):
             step_reward += KONG_REWARD
+            # 听牌状态下加杠（碰升杠）→ 额外奖励，激励杠上开花策略
+            if is_jiakang and shanten_before <= 0:
+                step_reward += JIAKANG_TENPAI_BONUS
 
         self._last_obs = obs
         return obs, step_reward, False, False, {}
@@ -135,9 +150,22 @@ class SingleAgentMajiangEnv(gym.Env):
         )
         return calc_shanten(counts, wilds, n_melds_fixed)
 
-    def _liuju_bonus(self) -> float:
-        """流局惩罚（固定负值，消除保守流局倾向）"""
-        return LIUJU_PENALTY
+    def _is_jiakang(self, state) -> bool:
+        """
+        检测当前 ACT_KONG_SELF 是否为加杠（将已有碰牌升为杠）。
+        加杠 = 手中持有与某个碰牌相同的第4张，可以升级为杠。
+        """
+        p = state.players[0]
+        counts, wilds = p.hand_counts(state.wild_idx)
+        for m in p.melds:
+            if m.meld_type == 'pong':
+                if counts[m.tiles[0]] >= 1:
+                    return True
+            elif m.meld_type == 'pong_wild':
+                if wilds >= 1:
+                    return True
+        return False
+
 
     def _estimate_score_potential(self) -> int:
         """
@@ -173,21 +201,49 @@ class SingleAgentMajiangEnv(gym.Env):
         if total_suit > 0 and max(suit_tile_counts) / total_suit >= 0.8:
             return 10
 
+        # 4. 一条龙路线（某花色1-9中，缺的点数 ≤ 手中万能牌数）
+        for s in range(3):
+            missing = sum(1 for n in range(9) if counts[s * 9 + n] == 0)
+            if missing <= wilds:
+                return 10
+
+        # 5. 有杠潜力：手里有三张同牌，或碰了一对且第四张未全部可见
+        for i, c in enumerate(counts):
+            if c >= 3:
+                return 5
+        for m in p.melds:
+            if m.meld_type in ('pong', 'pong_wild'):
+                tile_idx = m.tiles[0]
+                seen = 3  # 碰牌本身占3张
+                for seat in range(3):
+                    seen += state.discards[seat].count(tile_idx)
+                for player in state.players:
+                    for other_m in player.melds:
+                        if other_m is not m:
+                            seen += other_m.tiles.count(tile_idx)
+                if seen < 4:
+                    return 5
+
         return 0  # 无法达到胡牌门槛
 
     def _shanten_reward(self, prev: int, new: int) -> float:
         """
-        根据向听数变化返回中间奖励。
-        只有当前手牌路径有实际胡牌潜力（底分可达门槛）时才给予全额奖励。
+        根据向听数变化返回中间奖励（可为负）。
+
+        比较的是行动前（14张）vs 行动后（13张）的向听数：
+          - 向听数减少 → 正奖励（打得好）
+          - 向听数不变 → 0
+          - 向听数增加 → 负奖励（打坏了，如拆散对子）
+
+        路径有效性缩放仍然生效：无效路径奖惩均按比例缩小。
         """
-        if prev <= 0 or new < 0:
-            return 0.0
+        if new < 0:
+            return 0.0  # 已胡牌，由终局奖励处理
         improvement = prev - new
-        if improvement <= 0:
+        if improvement == 0:
             return 0.0
 
         potential = self._estimate_score_potential()
-        # 万能牌≥2时门槛为20，否则为10
         state = self._env.state
         p = state.players[0]
         _, wilds = p.hand_counts(state.wild_idx)
@@ -197,14 +253,20 @@ class SingleAgentMajiangEnv(gym.Env):
             for m in p.melds
         )
         threshold = 20 if wild_total >= 2 else 10
-        # shanten≤1（接近或已听牌）时也视为有效路径，鼓励完成手牌
+        # shanten≤1 视为有效路径（接近听牌时惩罚力度不打折）
         valid = potential >= threshold or new <= 1
 
-        scale = 1.0 if valid else INVALID_PATH_SCALE
+        if valid:
+            scale = 1.0
+        elif potential > 0:
+            scale = KONG_POTENTIAL_SCALE
+        else:
+            scale = INVALID_PATH_SCALE
+
         reward = improvement * SHANTEN_REWARD_SCALE * scale
 
-        # 有效听牌（向听=0且底分足够）给予额外奖励
-        if new == 0 and valid:
+        # 达到有效听牌时给予额外奖励（仅向好方向变化时）
+        if new == 0 and improvement > 0 and valid:
             reward += TENPAI_BONUS
         return reward
 
@@ -220,9 +282,22 @@ class SingleAgentMajiangEnv(gym.Env):
         if ACT_WIN in legal and action != ACT_WIN:
             self._act_win_skipped += 1
 
-    def _episode_info(self) -> dict:
+    def _episode_info(self, deltas: dict = None) -> dict:
         """对局结束时的统计信息，供 StatsCallback 使用"""
         state = self._env.state
+        # 收尾牌谱：记录终局事件
+        if state.winner is None:
+            self._replay_log.append({"e": "end", "result": "流局", "deltas": deltas})
+        elif state.winner == 0:
+            wr = state.win_result
+            types_zh = "+".join(wr.win_types) if wr else "?"
+            self._replay_log.append({"e": "end", "result": "seat0胡",
+                                     "types": types_zh,
+                                     "score": int(wr.base_score) if wr else 0,
+                                     "deltas": deltas})
+        else:
+            self._replay_log.append({"e": "end", "result": f"seat{state.winner}胡",
+                                     "deltas": deltas})
         return {
             "winner":       state.winner,
             "win_result":   state.win_result,
@@ -232,7 +307,39 @@ class SingleAgentMajiangEnv(gym.Env):
             "kong_taken":   self._act_kong_taken,
             "win_declared": self._act_win_declared,
             "win_skipped":  self._act_win_skipped,
+            "replay":       self._replay_log,
         }
+
+    def _log_agent_turn(self, action: int, state):
+        """记录 seat0 本轮的摸牌（若有）和动作"""
+        p = state.players[0]
+        hand = " ".join(sorted(tile_name(t) for t in p.hand))
+        if state.phase == 'action':
+            drawn = tile_name(state.last_drawn) if state.last_drawn is not None else "?"
+            self._replay_log.append({"e": "draw", "tile": drawn,
+                                     "sht": self._prev_shanten, "hand": hand})
+            act_str = self._act_str(action, state)
+        else:  # respond
+            act_str = self._act_str(action, state)
+        self._replay_log.append({"e": "act", "a": act_str})
+
+    def _act_str(self, action: int, state) -> str:
+        if action < 34:
+            return f"打{tile_name(action)}"
+        elif action == ACT_KONG_SELF:
+            return "暗杠"
+        elif action == ACT_PONG:
+            t = state.last_discard
+            return f"碰{tile_name(t)}" if t is not None else "碰"
+        elif action == ACT_KONG_DISCARD:
+            t = state.last_discard
+            return f"杠明{tile_name(t)}" if t is not None else "杠明"
+        elif action == ACT_WIN:
+            return "胡牌"
+        elif action == ACT_PASS:
+            t = state.last_discard
+            return f"过({tile_name(t)})" if t is not None else "过"
+        return f"act{action}"
 
     def action_masks(self) -> np.ndarray:
         """MaskablePPO 所需：返回合法动作 bool 掩码"""
@@ -256,6 +363,15 @@ class SingleAgentMajiangEnv(gym.Env):
             legal = env.legal_actions(seat)
             opp_obs = env._observe(seat)
             action = self.opponent_policy(opp_obs, legal)
+            # 记录对手关键动作（碰/杠/胡）
+            if action in (ACT_PONG, ACT_KONG_DISCARD):
+                tile = env.state.last_discard
+                self._replay_log.append({"e": "opp", "seat": seat,
+                                         "a": ("碰" if action == ACT_PONG else "杠明") + tile_name(tile)})
+            elif action == ACT_KONG_SELF:
+                self._replay_log.append({"e": "opp", "seat": seat, "a": "暗杠"})
+            elif action == ACT_WIN:
+                self._replay_log.append({"e": "opp", "seat": seat, "a": "胡牌"})
             obs, rewards, done, info = env.step(action)
             if done:
                 break
