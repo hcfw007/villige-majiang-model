@@ -116,6 +116,47 @@ def _shanten_shisanyao(counts: list[int], wilds: int) -> int:
     return 13 - have - (1 if has_pair else 0)
 
 
+def _shanten_yitiaolong(counts: list[int], wilds: int, n_melds_fixed: int) -> int:
+    """
+    一条龙向听数：某花色1-9各一张 + 剩余牌凑面子+将。
+
+    计算方式：
+      dragon_gap  = 龙中缺的牌数 - 可用万能牌数（≥0）
+      rest_shanten = 剩余手牌凑 (need_melds 面子 + 1将) 的向听数
+      总向听 = dragon_gap + rest_shanten
+    """
+    from env.tile import SUIT_MAN, SUIT_TONG, SUIT_TIAO
+    best = 13
+    for suit in (SUIT_MAN, SUIT_TONG, SUIT_TIAO):
+        start = suit * 9
+        # 龙需要的9张牌中缺多少
+        missing = 0
+        c = counts[:]
+        for n in range(9):
+            t = start + n
+            if c[t] > 0:
+                c[t] -= 1
+            else:
+                missing += 1
+        # 万能牌先补龙的缺口
+        wilds_for_dragon = min(wilds, missing)
+        dragon_gap = missing - wilds_for_dragon
+        wilds_left = wilds - wilds_for_dragon
+        # 剩余手牌需要凑的面子数
+        need_melds = 4 - n_melds_fixed - 3  # 龙本身占3个面子位
+        if need_melds < 0:
+            # 公开面子太多，不可能组一条龙
+            continue
+        # 剩余牌的标准向听
+        rest = _shanten_standard(c, wilds_left, n_melds_fixed + 3)
+        # 调整：_shanten_standard 算的是 need=(4-n_melds_fixed-3) 面子+将
+        # dragon_gap 是龙还差几张
+        total = dragon_gap + max(0, rest)
+        if total < best:
+            best = total
+    return best
+
+
 def calc_shanten(counts: list[int], wilds: int, n_melds_fixed: int = 0) -> int:
     """
     计算最小向听数（取所有胡牌型中的最小值）。
@@ -126,4 +167,5 @@ def calc_shanten(counts: list[int], wilds: int, n_melds_fixed: int = 0) -> int:
     s_std  = _shanten_standard(counts[:], wilds, n_melds_fixed)
     s_7    = _shanten_qidui(counts, wilds) if n_melds_fixed == 0 else 13
     s_13   = _shanten_shisanyao(counts, 0) if n_melds_fixed == 0 else 13
-    return min(s_std, s_7, s_13)
+    s_ytl  = _shanten_yitiaolong(counts, wilds, n_melds_fixed)
+    return min(s_std, s_7, s_13, s_ytl)

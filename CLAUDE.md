@@ -62,9 +62,10 @@ python inspect_strategy.py
 - `34`: Self kong, `35`: Pong, `36`: Kong from discard, `37`: Declare win, `38`: Pass
 
 ### Reward Shaping
-- **Terminal:** `settlement_delta` if win/opponent wins; `settlement_delta - LIUJU_PENALTY(3.0)` if draw
-- **Intermediate:** Shanten improvement rewards (`SHANTEN_REWARD_SCALE=0.4`), tenpai bonus (`TENPAI_BONUS=3.0`), kong reward (`KONG_REWARD=2.0`), jiakang-while-tenpai bonus (`JIAKANG_TENPAI_BONUS=4.0`)
+- **Terminal:** `settlement_delta` if win/opponent wins; `settlement_delta - LIUJU_PENALTY(3.0)` if draw (tenpai discount: ×0.3)
+- **Intermediate:** Shanten improvement rewards (`SHANTEN_REWARD_SCALE=0.4`), tenpai bonus (`TENPAI_BONUS=3.0`), kong reward (`KONG_REWARD=2.0`), jiakang-while-tenpai bonus (`JIAKANG_TENPAI_BONUS=4.0`), pong reward (`PONG_REWARD=0.3`, only when 4th tile unseen)
 - Path viability filter: shanten rewards only apply when the hand is pursuing a valid scoring path (est. score ≥ threshold)
+- Shanten calculation covers: standard, qidui, shisanyao, yitiaolong
 
 ### Training
 - **Algorithm:** MaskablePPO (`sb3_contrib`), MlpPolicy `[512, 512, 256]`, CPU-only (simulation is the bottleneck)

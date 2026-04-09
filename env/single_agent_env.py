@@ -33,6 +33,8 @@ KONG_POTENTIAL_SCALE  = 0.5
 KONG_REWARD           = 2.0   # 每次杠牌即时奖励（鼓励积极杠牌）
 JIAKANG_TENPAI_BONUS  = 4.0   # 听牌状态下加杠（碰升杠）的额外奖励，激励杠上开花
 LIUJU_PENALTY         = 3.0   # 流局额外惩罚（叠加在结算分之上）
+LIUJU_TENPAI_DISCOUNT = 0.3   # 流局时已听牌，惩罚缩小为原来的此比例
+PONG_REWARD           = 0.3   # 碰牌即时奖励（仅当第4张未见时）
 
 
 
@@ -110,12 +112,18 @@ class SingleAgentMajiangEnv(gym.Env):
             deltas = settle(env.state)
             terminal_r = float(deltas[0])
             if env.state.winner is None:
-                terminal_r -= LIUJU_PENALTY
+                terminal_r -= self._liuju_penalty()
             return obs, terminal_r, True, False, self._episode_info(deltas)
 
         # 立即计算行动后向听数（行动前 vs 行动后，直接衡量本次动作的影响）
         post_action_shanten = self._get_shanten()
         step_reward = self._shanten_reward(shanten_before, post_action_shanten)
+
+        # 碰牌奖励：仅当第4张尚未可见时
+        if action == ACT_PONG:
+            pong_r = self._pong_reward()
+            if pong_r > 0:
+                step_reward += pong_r
 
         # 让对手行动，直到轮到 seat=0 或游戏结束
         obs = self._run_opponents_until_agent(obs, info)
@@ -124,7 +132,7 @@ class SingleAgentMajiangEnv(gym.Env):
             deltas = settle(env.state)
             terminal_r = float(deltas[0])
             if env.state.winner is None:
-                terminal_r -= LIUJU_PENALTY
+                terminal_r -= self._liuju_penalty()
             return obs, terminal_r, True, False, self._episode_info(deltas)
 
         # 更新 prev_shanten 为下一步"行动前"的状态（已摸牌）
@@ -166,6 +174,51 @@ class SingleAgentMajiangEnv(gym.Env):
                     return True
         return False
 
+
+    def _pong_reward(self) -> float:
+        """
+        碰牌即时奖励。仅当被碰牌的第4张尚未在场面上可见时才给奖励，
+        此时碰→加杠路线仍有可能，值得鼓励。
+        """
+        state = self._env.state
+        p = state.players[0]
+        # 找到刚碰的面子（最后一个 pong/pong_wild）
+        if not p.melds:
+            return 0.0
+        last_meld = p.melds[-1]
+        if last_meld.meld_type not in ('pong', 'pong_wild'):
+            return 0.0
+        tile_idx = last_meld.tiles[0]
+        # 统计该牌在场面上可见的数量：碰的3张 + 弃牌堆 + 其他人面子
+        visible = 3  # 碰本身
+        for seat in range(3):
+            visible += state.discards[seat].count(tile_idx)
+        for seat in range(3):
+            for m in state.players[seat].melds:
+                if m is not last_meld:
+                    visible += m.tiles.count(tile_idx)
+        # 第4张未见 → 奖励
+        if visible < 4:
+            return PONG_REWARD
+        return 0.0
+
+    def _liuju_penalty(self) -> float:
+        """流局惩罚，听牌时减免"""
+        shanten = self._get_shanten()
+        if shanten <= 0:
+            potential = self._estimate_score_potential()
+            state = self._env.state
+            p = state.players[0]
+            _, wilds = p.hand_counts(state.wild_idx)
+            wild_total = wilds + sum(
+                4 if 'kong_wild' in m.meld_type else
+                3 if m.meld_type == 'pong_wild' else 0
+                for m in p.melds
+            )
+            threshold = 20 if wild_total >= 2 else 10
+            if potential >= threshold:
+                return LIUJU_PENALTY * LIUJU_TENPAI_DISCOUNT
+        return LIUJU_PENALTY
 
     def _estimate_score_potential(self) -> int:
         """
